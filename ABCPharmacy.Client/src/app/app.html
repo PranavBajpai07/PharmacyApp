@@ -1,0 +1,191 @@
+<main class="app-shell">
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">ABC Pharmacy</p>
+      <h1>Medicine Inventory</h1>
+    </div>
+    <div class="topbar-actions">
+      <span class="api-pill">.NET 10 API</span>
+      <span class="api-pill angular">Angular 21</span>
+    </div>
+  </header>
+
+  <section class="metrics-grid" aria-label="Inventory summary">
+    <div class="metric">
+      <span>Total medicines</span>
+      <strong>{{ medicines().length }}</strong>
+    </div>
+    <div class="metric warning">
+      <span>Low stock</span>
+      <strong>{{ lowStockCount() }}</strong>
+    </div>
+    <div class="metric danger">
+      <span>Expiring soon</span>
+      <strong>{{ expiringSoonCount() }}</strong>
+    </div>
+    <div class="metric value">
+      <span>Stock value</span>
+      <strong>{{ inventoryValue() | currency }}</strong>
+    </div>
+  </section>
+
+  @if (message()) {
+    <p class="notice success">{{ message() }}</p>
+  }
+
+  @if (error()) {
+    <p class="notice error">{{ error() }}</p>
+  }
+
+  <section class="layout-grid">
+    <section class="panel inventory-panel">
+      <div class="section-header">
+        <div>
+          <h2>Available Medicines</h2>
+          <p>{{ loading() ? 'Loading' : medicines().length + ' records' }}</p>
+        </div>
+        <label class="search-box">
+          <span>Search</span>
+          <input
+            type="search"
+            [value]="searchTerm()"
+            (input)="onSearch($event)"
+            placeholder="Medicine name"
+          />
+        </label>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Full Name</th>
+              <th>Brand</th>
+              <th>Expiry Date</th>
+              <th class="number">Quantity</th>
+              <th class="number">Price</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (medicine of medicines(); track medicine.id) {
+              <tr [class]="rowClass(medicine)">
+                <td>
+                  <strong>{{ medicine.fullName }}</strong>
+                </td>
+                <td>{{ medicine.brand }}</td>
+                <td>
+                  {{ medicine.expiryDate | date: 'mediumDate' }}
+                  <span class="muted">({{ daysUntilExpiry(medicine.expiryDate) }} days)</span>
+                </td>
+                <td class="number">{{ medicine.quantity }}</td>
+                <td class="number">{{ medicine.price | currency }}</td>
+                <td>
+                  <span class="status">{{ statusLabel(medicine) }}</span>
+                </td>
+              </tr>
+            } @empty {
+              <tr>
+                <td colspan="6" class="empty-state">No medicines found.</td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel form-panel">
+      <h2>Add Medicine</h2>
+      <form [formGroup]="medicineForm" (ngSubmit)="addMedicine()" class="stacked-form">
+        <label>
+          <span>Full Name</span>
+          <input type="text" formControlName="fullName" />
+        </label>
+
+        <label>
+          <span>Brand</span>
+          <input type="text" formControlName="brand" />
+        </label>
+
+        <div class="split-row">
+          <label>
+            <span>Expiry Date</span>
+            <input type="date" formControlName="expiryDate" />
+          </label>
+          <label>
+            <span>Quantity</span>
+            <input type="number" min="0" formControlName="quantity" />
+          </label>
+        </div>
+
+        <label>
+          <span>Price</span>
+          <input type="number" min="0.01" step="0.01" formControlName="price" />
+        </label>
+
+        <label>
+          <span>Notes</span>
+          <textarea rows="4" formControlName="notes"></textarea>
+        </label>
+
+        <button type="submit" [disabled]="savingMedicine()">
+          {{ savingMedicine() ? 'Saving' : 'Add Medicine' }}
+        </button>
+      </form>
+    </section>
+  </section>
+
+  <section class="sales-grid">
+    <section class="panel sale-panel">
+      <h2>Record Sale</h2>
+      <form [formGroup]="saleForm" (ngSubmit)="recordSale()" class="stacked-form">
+        <label>
+          <span>Medicine</span>
+          <select formControlName="medicineId">
+            <option value="">Select medicine</option>
+            @for (medicine of saleOptions(); track medicine.id) {
+              <option [value]="medicine.id">
+                {{ medicine.fullName }} - {{ medicine.quantity }} in stock
+              </option>
+            }
+          </select>
+        </label>
+
+        <label>
+          <span>Quantity Sold</span>
+          <input type="number" min="1" formControlName="quantitySold" />
+        </label>
+
+        <button type="submit" [disabled]="recordingSale()">
+          {{ recordingSale() ? 'Recording' : 'Record Sale' }}
+        </button>
+      </form>
+    </section>
+
+    <section class="panel sales-history">
+      <div class="section-header">
+        <div>
+          <h2>Sales Records</h2>
+          <p>{{ sales().length }} transactions</p>
+        </div>
+      </div>
+
+      <div class="sales-list">
+        @for (sale of sales(); track sale.id) {
+          <article class="sale-row">
+            <div>
+              <strong>{{ sale.medicineName }}</strong>
+              <span>{{ sale.brand }} - {{ sale.soldAt | date: 'medium' }}</span>
+            </div>
+            <div class="sale-amount">
+              <span>{{ sale.quantitySold }} x {{ sale.unitPrice | currency }}</span>
+              <strong>{{ sale.totalPrice | currency }}</strong>
+            </div>
+          </article>
+        } @empty {
+          <p class="empty-state">No sales recorded.</p>
+        }
+      </div>
+    </section>
+  </section>
+</main>

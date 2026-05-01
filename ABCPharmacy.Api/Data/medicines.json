@@ -1,0 +1,29 @@
+[
+  {
+    "id": "713e5e5d-8a32-41dd-9290-4c339faa567c",
+    "fullName": "Paracetamol 500mg",
+    "notes": "Common pain relief and fever medicine.",
+    "expiryDate": "2026-05-18",
+    "quantity": 42,
+    "price": 2.50,
+    "brand": "ABC Health"
+  },
+  {
+    "id": "a416c9ff-0e4f-4ff7-bae4-c140e7d2bdad",
+    "fullName": "Amoxicillin 250mg",
+    "notes": "Prescription antibiotic. Dispense as directed.",
+    "expiryDate": "2026-11-30",
+    "quantity": 7,
+    "price": 8.75,
+    "brand": "CarePlus"
+  },
+  {
+    "id": "a7c29e83-0f46-4c06-9678-b9dc002d2d3c",
+    "fullName": "Cetirizine 10mg",
+    "notes": "Antihistamine tablets.",
+    "expiryDate": "2027-04-30",
+    "quantity": 30,
+    "price": 3.20,
+    "brand": "ReliefLabs"
+  }
+]

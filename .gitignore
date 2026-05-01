@@ -1,0 +1,13 @@
+/.dotnet/
+/.nuget/
+/.npm-cache/
+/*.log
+/.api.pid
+/.client.pid
+
+**/bin/
+**/obj/
+
+ABCPharmacy.Client/node_modules/
+ABCPharmacy.Client/dist/
+ABCPharmacy.Client/.angular/
