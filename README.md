@@ -1,41 +1,56 @@
 # PharmacyApp
 
-Standalone medicine inventory and sales tracking app.
+A full-stack pharmacy inventory and sales tracking app built to practise 
+clean API design and Angular component architecture.
 
-## Stack
+## What it does
 
-- Backend: ASP.NET Core Web API on .NET 10
-- Frontend: Angular 21
-- Storage: JSON files in `ABCPharmacy.Api/Data`
+- Lists medicines with brand, expiry date, quantity, price, and stock status
+- Records sales and auto-decrements inventory
+- Dashboard metrics: total medicines, low stock alerts, expiring-soon 
+  count, and total inventory value
+- JSON flat-file persistence — no database required to run locally
+
+## Tech stack
+
+| Layer    | Technology                      |
+|----------|---------------------------------|
+| Backend  | ASP.NET Core Web API · .NET 10  |
+| Frontend | Angular 21                      |
+| Storage  | JSON files in `ABCPharmacy.Api/Data` |
 
 ## Run locally
 
-Start the API:
-
+**Backend** — start the API:
 ```powershell
 dotnet run --project ABCPharmacy.Api --urls http://localhost:5178
 ```
 
-Start the Angular app from a second terminal:
-
+**Frontend** — in a second terminal:
 ```powershell
 cd ABCPharmacy.Client
 npm install
 npm run start -- --host localhost --port 4200
 ```
 
-Open:
+Then open `http://localhost:4200`.
 
-```text
-http://localhost:4200
-```
+> Angular 21 requires Node.js 20.19+, 22.12+, or 24+.  
+> Run `node --version` and switch to a compatible runtime if needed.
 
-Angular 21 requires Node.js 20.19+, 22.12+, or 24+. If your global `node --version` is lower, switch to a newer Node runtime before running the client commands.
+## API reference
 
-## API
+| Method | Route                       | Description                        |
+|--------|-----------------------------|------------------------------------|
+| GET    | /api/health                 | Health check                       |
+| GET    | /api/medicines?search={name}| List / search (no notes, grid view)|
+| GET    | /api/medicines/{id}         | Single medicine with notes         |
+| POST   | /api/medicines              | Add a medicine record              |
+| GET    | /api/sales                  | List sales records                 |
+| POST   | /api/sales                  | Record a sale, decrement stock     |
 
-- `GET /api/medicines?search={name}` lists medicines without notes for the grid.
-- `GET /api/medicines/{id}` returns one medicine with notes.
-- `POST /api/medicines` adds medicine details.
-- `GET /api/sales` lists sales records.
-- `POST /api/sales` records a sale and decrements stock.
+## Known limitations
+
+- No unit tests yet
+- Frontend API base URL is hardcoded to `http://localhost:5178/api`
+- JSON file storage is not suitable for production use
