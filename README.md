@@ -1,4 +1,4 @@
-# ABC Pharmacy
+# PharmacyApp
 
 Standalone medicine inventory and sales tracking app.
 
