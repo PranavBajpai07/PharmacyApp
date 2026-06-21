@@ -11,6 +11,10 @@ public interface IPharmacyRepository
 
     Task<Medicine> AddMedicineAsync(MedicineCreateRequest request);
 
+    Task<Medicine?> UpdateMedicineAsync(Guid id, MedicineUpdateRequest request);
+
+    Task<bool> DeleteMedicineAsync(Guid id);
+
     Task<IReadOnlyList<SaleRecord>> GetSalesAsync();
 
     Task<SaleResult> RecordSaleAsync(SaleCreateRequest request);

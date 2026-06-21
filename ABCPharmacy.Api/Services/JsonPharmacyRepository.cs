@@ -88,6 +88,61 @@ public sealed class JsonPharmacyRepository(IHostEnvironment environment) : IPhar
         }
     }
 
+    public async Task<Medicine?> UpdateMedicineAsync(Guid id, MedicineUpdateRequest request)
+    {
+        await _fileLock.WaitAsync();
+        try
+        {
+            await EnsureSeedDataAsync();
+            var medicines = await ReadJsonAsync<List<Medicine>>(MedicinesPath);
+            var medicine = medicines.SingleOrDefault(item => item.Id == id);
+
+            if (medicine is null)
+            {
+                return null;
+            }
+
+            medicine.FullName = request.FullName.Trim();
+            medicine.Notes = string.IsNullOrWhiteSpace(request.Notes) ? null : request.Notes.Trim();
+            medicine.ExpiryDate = request.ExpiryDate;
+            medicine.Quantity = request.Quantity;
+            medicine.Price = decimal.Round(request.Price, 2, MidpointRounding.AwayFromZero);
+            medicine.Brand = request.Brand.Trim();
+
+            await WriteJsonAsync(MedicinesPath, medicines);
+
+            return medicine;
+        }
+        finally
+        {
+            _fileLock.Release();
+        }
+    }
+
+    public async Task<bool> DeleteMedicineAsync(Guid id)
+    {
+        await _fileLock.WaitAsync();
+        try
+        {
+            await EnsureSeedDataAsync();
+            var medicines = await ReadJsonAsync<List<Medicine>>(MedicinesPath);
+            var removedCount = medicines.RemoveAll(item => item.Id == id);
+
+            if (removedCount == 0)
+            {
+                return false;
+            }
+
+            await WriteJsonAsync(MedicinesPath, medicines);
+
+            return true;
+        }
+        finally
+        {
+            _fileLock.Release();
+        }
+    }
+
     public async Task<IReadOnlyList<SaleRecord>> GetSalesAsync()
     {
         await _fileLock.WaitAsync();

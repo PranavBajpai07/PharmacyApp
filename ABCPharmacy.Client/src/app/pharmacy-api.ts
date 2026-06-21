@@ -1,7 +1,8 @@
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { inject, Injectable } from '@angular/core';
+import { environment } from '../environments/environment';
 
-const apiBaseUrl = 'http://localhost:5178/api';
+const apiBaseUrl = environment.apiBaseUrl;
 
 export interface Medicine {
   id: string;
@@ -12,6 +13,10 @@ export interface Medicine {
   brand: string;
 }
 
+export interface MedicineDetails extends Medicine {
+  notes: string | null;
+}
+
 export interface MedicineCreateRequest {
   fullName: string;
   notes?: string | null;
@@ -20,6 +25,8 @@ export interface MedicineCreateRequest {
   price: number;
   brand: string;
 }
+
+export type MedicineUpdateRequest = MedicineCreateRequest;
 
 export interface SaleRecord {
   id: string;
@@ -49,8 +56,20 @@ export class PharmacyApi {
     return this.http.get<Medicine[]>(`${apiBaseUrl}/medicines`, { params });
   }
 
+  getMedicine(id: string) {
+    return this.http.get<MedicineDetails>(`${apiBaseUrl}/medicines/${id}`);
+  }
+
   addMedicine(request: MedicineCreateRequest) {
-    return this.http.post<Medicine>(`${apiBaseUrl}/medicines`, request);
+    return this.http.post<MedicineDetails>(`${apiBaseUrl}/medicines`, request);
+  }
+
+  updateMedicine(id: string, request: MedicineUpdateRequest) {
+    return this.http.put<MedicineDetails>(`${apiBaseUrl}/medicines/${id}`, request);
+  }
+
+  deleteMedicine(id: string) {
+    return this.http.delete<void>(`${apiBaseUrl}/medicines/${id}`);
   }
 
   getSales() {

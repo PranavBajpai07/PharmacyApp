@@ -1,4 +1,4 @@
-import { Component, computed, inject, OnInit, signal } from '@angular/core';
+import { Component, computed, inject, OnDestroy, OnInit, signal } from '@angular/core';
 import {
   AbstractControl,
   ReactiveFormsModule,
@@ -7,6 +7,7 @@ import {
   NonNullableFormBuilder
 } from '@angular/forms';
 import { CurrencyPipe, DatePipe } from '@angular/common';
+import { HttpErrorResponse } from '@angular/common/http';
 import { PharmacyApi, Medicine, SaleRecord } from './pharmacy-api';
 
 const millisecondsPerDay = 24 * 60 * 60 * 1000;
@@ -21,15 +22,19 @@ function twoDecimalPlaces(control: AbstractControl): ValidationErrors | null {
   return Math.round(value * 100) === value * 100 ? null : { decimalPlaces: true };
 }
 
+type MedicineFormControlName = 'fullName' | 'brand' | 'expiryDate' | 'quantity' | 'price' | 'notes';
+type SaleFormControlName = 'medicineId' | 'quantitySold';
+
 @Component({
   selector: 'app-root',
   imports: [ReactiveFormsModule, CurrencyPipe, DatePipe],
   templateUrl: './app.html',
   styleUrl: './app.css'
 })
-export class App implements OnInit {
+export class App implements OnInit, OnDestroy {
   private readonly api = inject(PharmacyApi);
   private readonly formBuilder = inject(NonNullableFormBuilder);
+  private searchDebounceId: number | undefined;
 
   readonly medicines = signal<Medicine[]>([]);
   readonly sales = signal<SaleRecord[]>([]);
@@ -37,6 +42,8 @@ export class App implements OnInit {
   readonly loading = signal(false);
   readonly savingMedicine = signal(false);
   readonly recordingSale = signal(false);
+  readonly editingMedicineId = signal<string | null>(null);
+  readonly deletingMedicineId = signal<string | null>(null);
   readonly message = signal('');
   readonly error = signal('');
 
@@ -72,6 +79,10 @@ export class App implements OnInit {
     this.loadSales();
   }
 
+  ngOnDestroy(): void {
+    window.clearTimeout(this.searchDebounceId);
+  }
+
   loadMedicines(): void {
     this.loading.set(true);
     this.error.set('');
@@ -98,10 +109,11 @@ export class App implements OnInit {
   onSearch(event: Event): void {
     const value = (event.target as HTMLInputElement).value;
     this.searchTerm.set(value);
-    this.loadMedicines();
+    window.clearTimeout(this.searchDebounceId);
+    this.searchDebounceId = window.setTimeout(() => this.loadMedicines(), 300);
   }
 
-  addMedicine(): void {
+  saveMedicine(): void {
     this.message.set('');
     this.error.set('');
 
@@ -111,32 +123,88 @@ export class App implements OnInit {
     }
 
     const formValue = this.medicineForm.getRawValue();
+    const editingId = this.editingMedicineId();
     this.savingMedicine.set(true);
 
-    this.api.addMedicine({
+    const request = {
       fullName: formValue.fullName.trim(),
       brand: formValue.brand.trim(),
       expiryDate: formValue.expiryDate,
       quantity: Number(formValue.quantity),
       price: Number(Number(formValue.price).toFixed(2)),
       notes: formValue.notes.trim() || null
-    }).subscribe({
+    };
+    const saveRequest = editingId
+      ? this.api.updateMedicine(editingId, request)
+      : this.api.addMedicine(request);
+
+    saveRequest.subscribe({
       next: () => {
-        this.medicineForm.reset({
-          fullName: '',
-          brand: '',
-          expiryDate: '',
-          quantity: 0,
-          price: 0,
-          notes: ''
-        });
-        this.message.set('Medicine added.');
+        this.resetMedicineForm();
+        this.message.set(editingId ? 'Medicine updated.' : 'Medicine added.');
         this.savingMedicine.set(false);
         this.loadMedicines();
       },
-      error: () => {
-        this.error.set('Unable to add medicine. Check the form values.');
+      error: (response: unknown) => {
+        this.error.set(this.problemMessage(response, 'Unable to save medicine. Check the form values.'));
         this.savingMedicine.set(false);
+      }
+    });
+  }
+
+  startEdit(medicine: Medicine): void {
+    this.message.set('');
+    this.error.set('');
+
+    this.api.getMedicine(medicine.id).subscribe({
+      next: (details) => {
+        this.editingMedicineId.set(details.id);
+        this.medicineForm.reset({
+          fullName: details.fullName,
+          brand: details.brand,
+          expiryDate: details.expiryDate,
+          quantity: details.quantity,
+          price: details.price,
+          notes: details.notes ?? ''
+        });
+      },
+      error: (response: unknown) => {
+        this.error.set(this.problemMessage(response, 'Unable to load medicine details.'));
+      }
+    });
+  }
+
+  cancelEdit(): void {
+    this.resetMedicineForm();
+  }
+
+  deleteMedicine(medicine: Medicine): void {
+    this.message.set('');
+    this.error.set('');
+
+    if (!window.confirm(`Delete ${medicine.fullName}? This removes it from inventory.`)) {
+      return;
+    }
+
+    this.deletingMedicineId.set(medicine.id);
+
+    this.api.deleteMedicine(medicine.id).subscribe({
+      next: () => {
+        if (this.editingMedicineId() === medicine.id) {
+          this.resetMedicineForm();
+        }
+
+        if (this.saleForm.controls.medicineId.value === medicine.id) {
+          this.saleForm.reset({ medicineId: '', quantitySold: 1 });
+        }
+
+        this.message.set('Medicine deleted.');
+        this.deletingMedicineId.set(null);
+        this.loadMedicines();
+      },
+      error: (response: unknown) => {
+        this.error.set(this.problemMessage(response, 'Unable to delete medicine.'));
+        this.deletingMedicineId.set(null);
       }
     });
   }
@@ -164,8 +232,8 @@ export class App implements OnInit {
         this.loadMedicines();
         this.loadSales();
       },
-      error: (response) => {
-        this.error.set(response?.error?.message ?? 'Unable to record sale.');
+      error: (response: unknown) => {
+        this.error.set(this.problemMessage(response, 'Unable to record sale.'));
         this.recordingSale.set(false);
       }
     });
@@ -180,7 +248,13 @@ export class App implements OnInit {
   }
 
   rowClass(medicine: Medicine): string {
-    if (this.daysUntilExpiry(medicine.expiryDate) < 30) {
+    const daysUntilExpiry = this.daysUntilExpiry(medicine.expiryDate);
+
+    if (daysUntilExpiry < 0) {
+      return 'row-expired';
+    }
+
+    if (daysUntilExpiry < 30) {
       return 'row-expiring';
     }
 
@@ -192,7 +266,13 @@ export class App implements OnInit {
   }
 
   statusLabel(medicine: Medicine): string {
-    if (this.daysUntilExpiry(medicine.expiryDate) < 30) {
+    const daysUntilExpiry = this.daysUntilExpiry(medicine.expiryDate);
+
+    if (daysUntilExpiry < 0) {
+      return 'Expired';
+    }
+
+    if (daysUntilExpiry < 30) {
       return 'Expiring';
     }
 
@@ -201,5 +281,82 @@ export class App implements OnInit {
     }
 
     return 'Available';
+  }
+
+  medicineControlInvalid(controlName: MedicineFormControlName): boolean {
+    const control = this.medicineForm.controls[controlName];
+    return control.invalid && (control.dirty || control.touched);
+  }
+
+  saleControlInvalid(controlName: SaleFormControlName): boolean {
+    const control = this.saleForm.controls[controlName];
+    return control.invalid && (control.dirty || control.touched);
+  }
+
+  medicineError(controlName: MedicineFormControlName): string {
+    const control = this.medicineForm.controls[controlName];
+
+    if (control.hasError('required')) {
+      return 'This field is required.';
+    }
+
+    if (control.hasError('maxlength')) {
+      return 'This value is too long.';
+    }
+
+    if (control.hasError('min')) {
+      return controlName === 'quantity'
+        ? 'Quantity cannot be negative.'
+        : 'Price must be greater than zero.';
+    }
+
+    if (control.hasError('decimalPlaces')) {
+      return 'Use no more than two decimal places.';
+    }
+
+    return 'Check this value.';
+  }
+
+  saleError(controlName: SaleFormControlName): string {
+    const control = this.saleForm.controls[controlName];
+
+    if (control.hasError('required')) {
+      return 'This field is required.';
+    }
+
+    if (control.hasError('min')) {
+      return 'Quantity sold must be at least 1.';
+    }
+
+    return 'Check this value.';
+  }
+
+  private resetMedicineForm(): void {
+    this.editingMedicineId.set(null);
+    this.medicineForm.reset({
+      fullName: '',
+      brand: '',
+      expiryDate: '',
+      quantity: 0,
+      price: 0,
+      notes: ''
+    });
+  }
+
+  private problemMessage(response: unknown, fallback: string): string {
+    if (response instanceof HttpErrorResponse) {
+      const error = response.error;
+
+      if (typeof error === 'string' && error.trim()) {
+        return error;
+      }
+
+      if (error && typeof error === 'object') {
+        const apiError = error as { detail?: string; message?: string; title?: string };
+        return apiError.detail ?? apiError.message ?? apiError.title ?? fallback;
+      }
+    }
+
+    return fallback;
   }
 }

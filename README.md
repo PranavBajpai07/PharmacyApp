@@ -51,6 +51,21 @@ Then open `http://localhost:4200`.
 
 ## Known limitations
 
+<<<<<<< HEAD
 - No unit tests yet
 - Frontend API base URL is hardcoded to `http://localhost:5178/api`
 - JSON file storage is not suitable for production use
+=======
+- `GET /api/medicines?search={name}` lists medicines without notes for the grid.
+- `GET /api/medicines/{id}` returns one medicine with notes.
+- `POST /api/medicines` adds medicine details.
+- `PUT /api/medicines/{id}` updates medicine details.
+- `DELETE /api/medicines/{id}` removes a medicine from inventory.
+- `GET /api/sales` lists sales records.
+- `POST /api/sales` records a sale and decrements stock.
+
+## Client configuration
+
+The Angular API base URL is configured in `ABCPharmacy.Client/src/environments`.
+Development builds call `http://localhost:5178/api`; production builds use `/api`.
+>>>>>>> Improve pharmacy inventory management

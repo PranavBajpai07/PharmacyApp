@@ -23,7 +23,10 @@ public sealed class SalesController(IPharmacyRepository repository) : Controller
 
         if (result.Sale is null)
         {
-            return BadRequest(new { message = result.Error });
+            return Problem(
+                title: "Sale could not be recorded",
+                detail: result.Error,
+                statusCode: StatusCodes.Status400BadRequest);
         }
 
         return CreatedAtAction(nameof(GetSales), new { id = result.Sale.Id }, result.Sale);
