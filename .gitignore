@@ -1,9 +1,11 @@
 /.dotnet/
 /.nuget/
 /.npm-cache/
+/.vs/
 /*.log
 /.api.pid
 /.client.pid
+*.user
 
 **/bin/
 **/obj/
