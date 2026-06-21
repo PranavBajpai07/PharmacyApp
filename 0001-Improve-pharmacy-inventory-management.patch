@@ -1,0 +1,923 @@
+From 3d312b85267c601e7da1889ad76139a06349bfa9 Mon Sep 17 00:00:00 2001
+From: Pranav Bajpai <pranav.bajpai@scania.com>
+Date: Sun, 21 Jun 2026 14:32:07 +0530
+Subject: [PATCH] Improve pharmacy inventory management
+
+---
+ .gitignore                                    |   2 +
+ .../Contracts/MedicineUpdateRequest.cs        |  26 +++
+ .../Controllers/MedicinesController.cs        |  60 +++++-
+ .../Controllers/SalesController.cs            |   5 +-
+ .../Services/IPharmacyRepository.cs           |   4 +
+ .../Services/JsonPharmacyRepository.cs        |  55 +++++
+ ABCPharmacy.Client/angular.json               |  12 +-
+ ABCPharmacy.Client/src/app/app.css            |  58 ++++-
+ ABCPharmacy.Client/src/app/app.html           |  80 +++++--
+ ABCPharmacy.Client/src/app/app.ts             | 199 ++++++++++++++++--
+ ABCPharmacy.Client/src/app/pharmacy-api.ts    |  23 +-
+ .../environments/environment.development.ts   |   4 +
+ .../src/environments/environment.ts           |   4 +
+ README.md                                     |   7 +
+ 14 files changed, 495 insertions(+), 44 deletions(-)
+ create mode 100644 ABCPharmacy.Api/Contracts/MedicineUpdateRequest.cs
+ create mode 100644 ABCPharmacy.Client/src/environments/environment.development.ts
+ create mode 100644 ABCPharmacy.Client/src/environments/environment.ts
+
+diff --git a/.gitignore b/.gitignore
+index 85426cc..8e29946 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,9 +1,11 @@
+ /.dotnet/
+ /.nuget/
+ /.npm-cache/
++/.vs/
+ /*.log
+ /.api.pid
+ /.client.pid
++*.user
+ 
+ **/bin/
+ **/obj/
+diff --git a/ABCPharmacy.Api/Contracts/MedicineUpdateRequest.cs b/ABCPharmacy.Api/Contracts/MedicineUpdateRequest.cs
+new file mode 100644
+index 0000000..7c6e2ff
+--- /dev/null
++++ b/ABCPharmacy.Api/Contracts/MedicineUpdateRequest.cs
+@@ -0,0 +1,26 @@
++using System.ComponentModel.DataAnnotations;
++
++namespace ABCPharmacy.Api.Contracts;
++
++public sealed class MedicineUpdateRequest
++{
++    [Required]
++    [StringLength(160)]
++    public string FullName { get; set; } = string.Empty;
++
++    [StringLength(1000)]
++    public string? Notes { get; set; }
++
++    [Required]
++    public DateOnly ExpiryDate { get; set; }
++
++    [Range(0, int.MaxValue)]
++    public int Quantity { get; set; }
++
++    [Range(typeof(decimal), "0.01", "999999999.99")]
++    public decimal Price { get; set; }
++
++    [Required]
++    [StringLength(120)]
++    public string Brand { get; set; } = string.Empty;
++}
+diff --git a/ABCPharmacy.Api/Controllers/MedicinesController.cs b/ABCPharmacy.Api/Controllers/MedicinesController.cs
+index 97a4b6c..8904a06 100644
+--- a/ABCPharmacy.Api/Controllers/MedicinesController.cs
++++ b/ABCPharmacy.Api/Controllers/MedicinesController.cs
+@@ -32,9 +32,8 @@ public sealed class MedicinesController(IPharmacyRepository repository) : Contro
+     [HttpPost]
+     public async Task<ActionResult<MedicineDto>> AddMedicine(MedicineCreateRequest request)
+     {
+-        if (decimal.Round(request.Price, 2, MidpointRounding.AwayFromZero) != request.Price)
++        if (!ValidateMedicineDetails(request.FullName, request.Brand, request.Price))
+         {
+-            ModelState.AddModelError(nameof(request.Price), "Price must use no more than 2 decimal places.");
+             return ValidationProblem(ModelState);
+         }
+ 
+@@ -42,6 +41,63 @@ public sealed class MedicinesController(IPharmacyRepository repository) : Contro
+         return CreatedAtAction(nameof(GetMedicine), new { id = medicine.Id }, ToDto(medicine));
+     }
+ 
++    [HttpPut("{id:guid}")]
++    public async Task<ActionResult<MedicineDto>> UpdateMedicine(Guid id, MedicineUpdateRequest request)
++    {
++        if (!ValidateMedicineDetails(request.FullName, request.Brand, request.Price))
++        {
++            return ValidationProblem(ModelState);
++        }
++
++        var medicine = await repository.UpdateMedicineAsync(id, request);
++
++        if (medicine is null)
++        {
++            return MedicineNotFound(id);
++        }
++
++        return Ok(ToDto(medicine));
++    }
++
++    [HttpDelete("{id:guid}")]
++    public async Task<IActionResult> DeleteMedicine(Guid id)
++    {
++        var deleted = await repository.DeleteMedicineAsync(id);
++
++        if (!deleted)
++        {
++            return MedicineNotFound(id);
++        }
++
++        return NoContent();
++    }
++
++    private bool ValidateMedicineDetails(string fullName, string brand, decimal price)
++    {
++        if (string.IsNullOrWhiteSpace(fullName))
++        {
++            ModelState.AddModelError(nameof(MedicineCreateRequest.FullName), "Full name is required.");
++        }
++
++        if (string.IsNullOrWhiteSpace(brand))
++        {
++            ModelState.AddModelError(nameof(MedicineCreateRequest.Brand), "Brand is required.");
++        }
++
++        if (decimal.Round(price, 2, MidpointRounding.AwayFromZero) != price)
++        {
++            ModelState.AddModelError(nameof(MedicineCreateRequest.Price), "Price must use no more than 2 decimal places.");
++        }
++
++        return ModelState.IsValid;
++    }
++
++    private ObjectResult MedicineNotFound(Guid id) =>
++        Problem(
++            title: "Medicine not found",
++            detail: $"No medicine exists with id '{id}'.",
++            statusCode: StatusCodes.Status404NotFound);
++
+     private static MedicineListItemDto ToListItem(Medicine medicine) =>
+         new(
+             medicine.Id,
+diff --git a/ABCPharmacy.Api/Controllers/SalesController.cs b/ABCPharmacy.Api/Controllers/SalesController.cs
+index 470b07a..356d8c6 100644
+--- a/ABCPharmacy.Api/Controllers/SalesController.cs
++++ b/ABCPharmacy.Api/Controllers/SalesController.cs
+@@ -23,7 +23,10 @@ public sealed class SalesController(IPharmacyRepository repository) : Controller
+ 
+         if (result.Sale is null)
+         {
+-            return BadRequest(new { message = result.Error });
++            return Problem(
++                title: "Sale could not be recorded",
++                detail: result.Error,
++                statusCode: StatusCodes.Status400BadRequest);
+         }
+ 
+         return CreatedAtAction(nameof(GetSales), new { id = result.Sale.Id }, result.Sale);
+diff --git a/ABCPharmacy.Api/Services/IPharmacyRepository.cs b/ABCPharmacy.Api/Services/IPharmacyRepository.cs
+index 30c1ac0..04f4f89 100644
+--- a/ABCPharmacy.Api/Services/IPharmacyRepository.cs
++++ b/ABCPharmacy.Api/Services/IPharmacyRepository.cs
+@@ -11,6 +11,10 @@ public interface IPharmacyRepository
+ 
+     Task<Medicine> AddMedicineAsync(MedicineCreateRequest request);
+ 
++    Task<Medicine?> UpdateMedicineAsync(Guid id, MedicineUpdateRequest request);
++
++    Task<bool> DeleteMedicineAsync(Guid id);
++
+     Task<IReadOnlyList<SaleRecord>> GetSalesAsync();
+ 
+     Task<SaleResult> RecordSaleAsync(SaleCreateRequest request);
+diff --git a/ABCPharmacy.Api/Services/JsonPharmacyRepository.cs b/ABCPharmacy.Api/Services/JsonPharmacyRepository.cs
+index 72f8e39..e977d01 100644
+--- a/ABCPharmacy.Api/Services/JsonPharmacyRepository.cs
++++ b/ABCPharmacy.Api/Services/JsonPharmacyRepository.cs
+@@ -88,6 +88,61 @@ public sealed class JsonPharmacyRepository(IHostEnvironment environment) : IPhar
+         }
+     }
+ 
++    public async Task<Medicine?> UpdateMedicineAsync(Guid id, MedicineUpdateRequest request)
++    {
++        await _fileLock.WaitAsync();
++        try
++        {
++            await EnsureSeedDataAsync();
++            var medicines = await ReadJsonAsync<List<Medicine>>(MedicinesPath);
++            var medicine = medicines.SingleOrDefault(item => item.Id == id);
++
++            if (medicine is null)
++            {
++                return null;
++            }
++
++            medicine.FullName = request.FullName.Trim();
++            medicine.Notes = string.IsNullOrWhiteSpace(request.Notes) ? null : request.Notes.Trim();
++            medicine.ExpiryDate = request.ExpiryDate;
++            medicine.Quantity = request.Quantity;
++            medicine.Price = decimal.Round(request.Price, 2, MidpointRounding.AwayFromZero);
++            medicine.Brand = request.Brand.Trim();
++
++            await WriteJsonAsync(MedicinesPath, medicines);
++
++            return medicine;
++        }
++        finally
++        {
++            _fileLock.Release();
++        }
++    }
++
++    public async Task<bool> DeleteMedicineAsync(Guid id)
++    {
++        await _fileLock.WaitAsync();
++        try
++        {
++            await EnsureSeedDataAsync();
++            var medicines = await ReadJsonAsync<List<Medicine>>(MedicinesPath);
++            var removedCount = medicines.RemoveAll(item => item.Id == id);
++
++            if (removedCount == 0)
++            {
++                return false;
++            }
++
++            await WriteJsonAsync(MedicinesPath, medicines);
++
++            return true;
++        }
++        finally
++        {
++            _fileLock.Release();
++        }
++    }
++
+     public async Task<IReadOnlyList<SaleRecord>> GetSalesAsync()
+     {
+         await _fileLock.WaitAsync();
+diff --git a/ABCPharmacy.Client/angular.json b/ABCPharmacy.Client/angular.json
+index 3a85ef3..36122a5 100644
+--- a/ABCPharmacy.Client/angular.json
++++ b/ABCPharmacy.Client/angular.json
+@@ -63,8 +63,8 @@
+                 },
+                 {
+                   "type": "anyComponentStyle",
+-                  "maximumWarning": "4kB",
+-                  "maximumError": "8kB"
++                  "maximumWarning": "6kB",
++                  "maximumError": "10kB"
+                 }
+               ],
+               "outputHashing": "all"
+@@ -72,7 +72,13 @@
+             "development": {
+               "optimization": false,
+               "extractLicenses": false,
+-              "sourceMap": true
++              "sourceMap": true,
++              "fileReplacements": [
++                {
++                  "replace": "src/environments/environment.ts",
++                  "with": "src/environments/environment.development.ts"
++                }
++              ]
+             }
+           },
+           "defaultConfiguration": "production"
+diff --git a/ABCPharmacy.Client/src/app/app.css b/ABCPharmacy.Client/src/app/app.css
+index b090627..491cae2 100644
+--- a/ABCPharmacy.Client/src/app/app.css
++++ b/ABCPharmacy.Client/src/app/app.css
+@@ -215,7 +215,7 @@ textarea:focus {
+ table {
+   width: 100%;
+   border-collapse: collapse;
+-  min-width: 820px;
++  min-width: 940px;
+ }
+ 
+ th,
+@@ -237,6 +237,10 @@ tbody tr {
+   background: #fff;
+ }
+ 
++.row-expired {
++  background: #f8c2c2;
++}
++
+ .row-expiring {
+   background: #ffd7d7;
+ }
+@@ -266,6 +270,27 @@ tbody tr {
+   grid-template-columns: repeat(2, minmax(0, 1fr));
+ }
+ 
++.form-actions,
++.table-actions {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 8px;
++}
++
++.form-actions button {
++  flex: 1 1 140px;
++}
++
++.table-actions {
++  align-items: center;
++}
++
++.table-actions button {
++  min-height: 34px;
++  padding: 7px 10px;
++  font-size: 0.82rem;
++}
++
+ button {
+   border: 0;
+   border-radius: 6px;
+@@ -282,11 +307,42 @@ button:hover {
+   background: #0f6672;
+ }
+ 
++.secondary-button {
++  border: 1px solid #cbd5df;
++  background: #eef3f8;
++  color: #263445;
++}
++
++.secondary-button:hover {
++  background: #dde7f0;
++}
++
++.danger-button {
++  background: #b42318;
++}
++
++.danger-button:hover {
++  background: #951d14;
++}
++
+ button:disabled {
+   cursor: not-allowed;
+   opacity: 0.62;
+ }
+ 
++label.invalid input,
++label.invalid select,
++label.invalid textarea {
++  border-color: #c4342f;
++}
++
++.field-error {
++  color: #a62626;
++  font-size: 0.78rem;
++  font-weight: 800;
++  line-height: 1.3;
++}
++
+ .sales-list {
+   display: grid;
+   gap: 10px;
+diff --git a/ABCPharmacy.Client/src/app/app.html b/ABCPharmacy.Client/src/app/app.html
+index 66f77e4..421c05d 100644
+--- a/ABCPharmacy.Client/src/app/app.html
++++ b/ABCPharmacy.Client/src/app/app.html
+@@ -65,6 +65,7 @@
+               <th class="number">Quantity</th>
+               <th class="number">Price</th>
+               <th>Status</th>
++              <th>Actions</th>
+             </tr>
+           </thead>
+           <tbody>
+@@ -83,10 +84,25 @@
+                 <td>
+                   <span class="status">{{ statusLabel(medicine) }}</span>
+                 </td>
++                <td>
++                  <div class="table-actions">
++                    <button type="button" class="secondary-button" (click)="startEdit(medicine)">
++                      Edit
++                    </button>
++                    <button
++                      type="button"
++                      class="danger-button"
++                      [disabled]="deletingMedicineId() === medicine.id"
++                      (click)="deleteMedicine(medicine)"
++                    >
++                      {{ deletingMedicineId() === medicine.id ? 'Deleting' : 'Delete' }}
++                    </button>
++                  </div>
++                </td>
+               </tr>
+             } @empty {
+               <tr>
+-                <td colspan="6" class="empty-state">No medicines found.</td>
++                <td colspan="7" class="empty-state">No medicines found.</td>
+               </tr>
+             }
+           </tbody>
+@@ -95,42 +111,72 @@
+     </section>
+ 
+     <section class="panel form-panel">
+-      <h2>Add Medicine</h2>
+-      <form [formGroup]="medicineForm" (ngSubmit)="addMedicine()" class="stacked-form">
+-        <label>
++      <h2>{{ editingMedicineId() ? 'Edit Medicine' : 'Add Medicine' }}</h2>
++      <form [formGroup]="medicineForm" (ngSubmit)="saveMedicine()" class="stacked-form">
++        <label [class.invalid]="medicineControlInvalid('fullName')">
+           <span>Full Name</span>
+           <input type="text" formControlName="fullName" />
++          @if (medicineControlInvalid('fullName')) {
++            <small class="field-error">{{ medicineError('fullName') }}</small>
++          }
+         </label>
+ 
+-        <label>
++        <label [class.invalid]="medicineControlInvalid('brand')">
+           <span>Brand</span>
+           <input type="text" formControlName="brand" />
++          @if (medicineControlInvalid('brand')) {
++            <small class="field-error">{{ medicineError('brand') }}</small>
++          }
+         </label>
+ 
+         <div class="split-row">
+-          <label>
++          <label [class.invalid]="medicineControlInvalid('expiryDate')">
+             <span>Expiry Date</span>
+             <input type="date" formControlName="expiryDate" />
++            @if (medicineControlInvalid('expiryDate')) {
++              <small class="field-error">{{ medicineError('expiryDate') }}</small>
++            }
+           </label>
+-          <label>
++          <label [class.invalid]="medicineControlInvalid('quantity')">
+             <span>Quantity</span>
+             <input type="number" min="0" formControlName="quantity" />
++            @if (medicineControlInvalid('quantity')) {
++              <small class="field-error">{{ medicineError('quantity') }}</small>
++            }
+           </label>
+         </div>
+ 
+-        <label>
++        <label [class.invalid]="medicineControlInvalid('price')">
+           <span>Price</span>
+           <input type="number" min="0.01" step="0.01" formControlName="price" />
++          @if (medicineControlInvalid('price')) {
++            <small class="field-error">{{ medicineError('price') }}</small>
++          }
+         </label>
+ 
+-        <label>
++        <label [class.invalid]="medicineControlInvalid('notes')">
+           <span>Notes</span>
+           <textarea rows="4" formControlName="notes"></textarea>
++          @if (medicineControlInvalid('notes')) {
++            <small class="field-error">{{ medicineError('notes') }}</small>
++          }
+         </label>
+ 
+-        <button type="submit" [disabled]="savingMedicine()">
+-          {{ savingMedicine() ? 'Saving' : 'Add Medicine' }}
+-        </button>
++        <div class="form-actions">
++          <button type="submit" [disabled]="savingMedicine()">
++            {{ savingMedicine() ? 'Saving' : (editingMedicineId() ? 'Update Medicine' : 'Add Medicine') }}
++          </button>
++          @if (editingMedicineId()) {
++            <button
++              type="button"
++              class="secondary-button"
++              [disabled]="savingMedicine()"
++              (click)="cancelEdit()"
++            >
++              Cancel
++            </button>
++          }
++        </div>
+       </form>
+     </section>
+   </section>
+@@ -139,7 +185,7 @@
+     <section class="panel sale-panel">
+       <h2>Record Sale</h2>
+       <form [formGroup]="saleForm" (ngSubmit)="recordSale()" class="stacked-form">
+-        <label>
++        <label [class.invalid]="saleControlInvalid('medicineId')">
+           <span>Medicine</span>
+           <select formControlName="medicineId">
+             <option value="">Select medicine</option>
+@@ -149,11 +195,17 @@
+               </option>
+             }
+           </select>
++          @if (saleControlInvalid('medicineId')) {
++            <small class="field-error">{{ saleError('medicineId') }}</small>
++          }
+         </label>
+ 
+-        <label>
++        <label [class.invalid]="saleControlInvalid('quantitySold')">
+           <span>Quantity Sold</span>
+           <input type="number" min="1" formControlName="quantitySold" />
++          @if (saleControlInvalid('quantitySold')) {
++            <small class="field-error">{{ saleError('quantitySold') }}</small>
++          }
+         </label>
+ 
+         <button type="submit" [disabled]="recordingSale()">
+diff --git a/ABCPharmacy.Client/src/app/app.ts b/ABCPharmacy.Client/src/app/app.ts
+index f83f274..4d90380 100644
+--- a/ABCPharmacy.Client/src/app/app.ts
++++ b/ABCPharmacy.Client/src/app/app.ts
+@@ -1,4 +1,4 @@
+-import { Component, computed, inject, OnInit, signal } from '@angular/core';
++import { Component, computed, inject, OnDestroy, OnInit, signal } from '@angular/core';
+ import {
+   AbstractControl,
+   ReactiveFormsModule,
+@@ -7,6 +7,7 @@ import {
+   NonNullableFormBuilder
+ } from '@angular/forms';
+ import { CurrencyPipe, DatePipe } from '@angular/common';
++import { HttpErrorResponse } from '@angular/common/http';
+ import { PharmacyApi, Medicine, SaleRecord } from './pharmacy-api';
+ 
+ const millisecondsPerDay = 24 * 60 * 60 * 1000;
+@@ -21,15 +22,19 @@ function twoDecimalPlaces(control: AbstractControl): ValidationErrors | null {
+   return Math.round(value * 100) === value * 100 ? null : { decimalPlaces: true };
+ }
+ 
++type MedicineFormControlName = 'fullName' | 'brand' | 'expiryDate' | 'quantity' | 'price' | 'notes';
++type SaleFormControlName = 'medicineId' | 'quantitySold';
++
+ @Component({
+   selector: 'app-root',
+   imports: [ReactiveFormsModule, CurrencyPipe, DatePipe],
+   templateUrl: './app.html',
+   styleUrl: './app.css'
+ })
+-export class App implements OnInit {
++export class App implements OnInit, OnDestroy {
+   private readonly api = inject(PharmacyApi);
+   private readonly formBuilder = inject(NonNullableFormBuilder);
++  private searchDebounceId: number | undefined;
+ 
+   readonly medicines = signal<Medicine[]>([]);
+   readonly sales = signal<SaleRecord[]>([]);
+@@ -37,6 +42,8 @@ export class App implements OnInit {
+   readonly loading = signal(false);
+   readonly savingMedicine = signal(false);
+   readonly recordingSale = signal(false);
++  readonly editingMedicineId = signal<string | null>(null);
++  readonly deletingMedicineId = signal<string | null>(null);
+   readonly message = signal('');
+   readonly error = signal('');
+ 
+@@ -72,6 +79,10 @@ export class App implements OnInit {
+     this.loadSales();
+   }
+ 
++  ngOnDestroy(): void {
++    window.clearTimeout(this.searchDebounceId);
++  }
++
+   loadMedicines(): void {
+     this.loading.set(true);
+     this.error.set('');
+@@ -98,10 +109,11 @@ export class App implements OnInit {
+   onSearch(event: Event): void {
+     const value = (event.target as HTMLInputElement).value;
+     this.searchTerm.set(value);
+-    this.loadMedicines();
++    window.clearTimeout(this.searchDebounceId);
++    this.searchDebounceId = window.setTimeout(() => this.loadMedicines(), 300);
+   }
+ 
+-  addMedicine(): void {
++  saveMedicine(): void {
+     this.message.set('');
+     this.error.set('');
+ 
+@@ -111,36 +123,92 @@ export class App implements OnInit {
+     }
+ 
+     const formValue = this.medicineForm.getRawValue();
++    const editingId = this.editingMedicineId();
+     this.savingMedicine.set(true);
+ 
+-    this.api.addMedicine({
++    const request = {
+       fullName: formValue.fullName.trim(),
+       brand: formValue.brand.trim(),
+       expiryDate: formValue.expiryDate,
+       quantity: Number(formValue.quantity),
+       price: Number(Number(formValue.price).toFixed(2)),
+       notes: formValue.notes.trim() || null
+-    }).subscribe({
++    };
++    const saveRequest = editingId
++      ? this.api.updateMedicine(editingId, request)
++      : this.api.addMedicine(request);
++
++    saveRequest.subscribe({
+       next: () => {
+-        this.medicineForm.reset({
+-          fullName: '',
+-          brand: '',
+-          expiryDate: '',
+-          quantity: 0,
+-          price: 0,
+-          notes: ''
+-        });
+-        this.message.set('Medicine added.');
++        this.resetMedicineForm();
++        this.message.set(editingId ? 'Medicine updated.' : 'Medicine added.');
+         this.savingMedicine.set(false);
+         this.loadMedicines();
+       },
+-      error: () => {
+-        this.error.set('Unable to add medicine. Check the form values.');
++      error: (response: unknown) => {
++        this.error.set(this.problemMessage(response, 'Unable to save medicine. Check the form values.'));
+         this.savingMedicine.set(false);
+       }
+     });
+   }
+ 
++  startEdit(medicine: Medicine): void {
++    this.message.set('');
++    this.error.set('');
++
++    this.api.getMedicine(medicine.id).subscribe({
++      next: (details) => {
++        this.editingMedicineId.set(details.id);
++        this.medicineForm.reset({
++          fullName: details.fullName,
++          brand: details.brand,
++          expiryDate: details.expiryDate,
++          quantity: details.quantity,
++          price: details.price,
++          notes: details.notes ?? ''
++        });
++      },
++      error: (response: unknown) => {
++        this.error.set(this.problemMessage(response, 'Unable to load medicine details.'));
++      }
++    });
++  }
++
++  cancelEdit(): void {
++    this.resetMedicineForm();
++  }
++
++  deleteMedicine(medicine: Medicine): void {
++    this.message.set('');
++    this.error.set('');
++
++    if (!window.confirm(`Delete ${medicine.fullName}? This removes it from inventory.`)) {
++      return;
++    }
++
++    this.deletingMedicineId.set(medicine.id);
++
++    this.api.deleteMedicine(medicine.id).subscribe({
++      next: () => {
++        if (this.editingMedicineId() === medicine.id) {
++          this.resetMedicineForm();
++        }
++
++        if (this.saleForm.controls.medicineId.value === medicine.id) {
++          this.saleForm.reset({ medicineId: '', quantitySold: 1 });
++        }
++
++        this.message.set('Medicine deleted.');
++        this.deletingMedicineId.set(null);
++        this.loadMedicines();
++      },
++      error: (response: unknown) => {
++        this.error.set(this.problemMessage(response, 'Unable to delete medicine.'));
++        this.deletingMedicineId.set(null);
++      }
++    });
++  }
++
+   recordSale(): void {
+     this.message.set('');
+     this.error.set('');
+@@ -164,8 +232,8 @@ export class App implements OnInit {
+         this.loadMedicines();
+         this.loadSales();
+       },
+-      error: (response) => {
+-        this.error.set(response?.error?.message ?? 'Unable to record sale.');
++      error: (response: unknown) => {
++        this.error.set(this.problemMessage(response, 'Unable to record sale.'));
+         this.recordingSale.set(false);
+       }
+     });
+@@ -180,7 +248,13 @@ export class App implements OnInit {
+   }
+ 
+   rowClass(medicine: Medicine): string {
+-    if (this.daysUntilExpiry(medicine.expiryDate) < 30) {
++    const daysUntilExpiry = this.daysUntilExpiry(medicine.expiryDate);
++
++    if (daysUntilExpiry < 0) {
++      return 'row-expired';
++    }
++
++    if (daysUntilExpiry < 30) {
+       return 'row-expiring';
+     }
+ 
+@@ -192,7 +266,13 @@ export class App implements OnInit {
+   }
+ 
+   statusLabel(medicine: Medicine): string {
+-    if (this.daysUntilExpiry(medicine.expiryDate) < 30) {
++    const daysUntilExpiry = this.daysUntilExpiry(medicine.expiryDate);
++
++    if (daysUntilExpiry < 0) {
++      return 'Expired';
++    }
++
++    if (daysUntilExpiry < 30) {
+       return 'Expiring';
+     }
+ 
+@@ -202,4 +282,81 @@ export class App implements OnInit {
+ 
+     return 'Available';
+   }
++
++  medicineControlInvalid(controlName: MedicineFormControlName): boolean {
++    const control = this.medicineForm.controls[controlName];
++    return control.invalid && (control.dirty || control.touched);
++  }
++
++  saleControlInvalid(controlName: SaleFormControlName): boolean {
++    const control = this.saleForm.controls[controlName];
++    return control.invalid && (control.dirty || control.touched);
++  }
++
++  medicineError(controlName: MedicineFormControlName): string {
++    const control = this.medicineForm.controls[controlName];
++
++    if (control.hasError('required')) {
++      return 'This field is required.';
++    }
++
++    if (control.hasError('maxlength')) {
++      return 'This value is too long.';
++    }
++
++    if (control.hasError('min')) {
++      return controlName === 'quantity'
++        ? 'Quantity cannot be negative.'
++        : 'Price must be greater than zero.';
++    }
++
++    if (control.hasError('decimalPlaces')) {
++      return 'Use no more than two decimal places.';
++    }
++
++    return 'Check this value.';
++  }
++
++  saleError(controlName: SaleFormControlName): string {
++    const control = this.saleForm.controls[controlName];
++
++    if (control.hasError('required')) {
++      return 'This field is required.';
++    }
++
++    if (control.hasError('min')) {
++      return 'Quantity sold must be at least 1.';
++    }
++
++    return 'Check this value.';
++  }
++
++  private resetMedicineForm(): void {
++    this.editingMedicineId.set(null);
++    this.medicineForm.reset({
++      fullName: '',
++      brand: '',
++      expiryDate: '',
++      quantity: 0,
++      price: 0,
++      notes: ''
++    });
++  }
++
++  private problemMessage(response: unknown, fallback: string): string {
++    if (response instanceof HttpErrorResponse) {
++      const error = response.error;
++
++      if (typeof error === 'string' && error.trim()) {
++        return error;
++      }
++
++      if (error && typeof error === 'object') {
++        const apiError = error as { detail?: string; message?: string; title?: string };
++        return apiError.detail ?? apiError.message ?? apiError.title ?? fallback;
++      }
++    }
++
++    return fallback;
++  }
+ }
+diff --git a/ABCPharmacy.Client/src/app/pharmacy-api.ts b/ABCPharmacy.Client/src/app/pharmacy-api.ts
+index b4b43f2..fc42f45 100644
+--- a/ABCPharmacy.Client/src/app/pharmacy-api.ts
++++ b/ABCPharmacy.Client/src/app/pharmacy-api.ts
+@@ -1,7 +1,8 @@
+ import { HttpClient, HttpParams } from '@angular/common/http';
+ import { inject, Injectable } from '@angular/core';
++import { environment } from '../environments/environment';
+ 
+-const apiBaseUrl = 'http://localhost:5178/api';
++const apiBaseUrl = environment.apiBaseUrl;
+ 
+ export interface Medicine {
+   id: string;
+@@ -12,6 +13,10 @@ export interface Medicine {
+   brand: string;
+ }
+ 
++export interface MedicineDetails extends Medicine {
++  notes: string | null;
++}
++
+ export interface MedicineCreateRequest {
+   fullName: string;
+   notes?: string | null;
+@@ -21,6 +26,8 @@ export interface MedicineCreateRequest {
+   brand: string;
+ }
+ 
++export type MedicineUpdateRequest = MedicineCreateRequest;
++
+ export interface SaleRecord {
+   id: string;
+   medicineId: string;
+@@ -49,8 +56,20 @@ export class PharmacyApi {
+     return this.http.get<Medicine[]>(`${apiBaseUrl}/medicines`, { params });
+   }
+ 
++  getMedicine(id: string) {
++    return this.http.get<MedicineDetails>(`${apiBaseUrl}/medicines/${id}`);
++  }
++
+   addMedicine(request: MedicineCreateRequest) {
+-    return this.http.post<Medicine>(`${apiBaseUrl}/medicines`, request);
++    return this.http.post<MedicineDetails>(`${apiBaseUrl}/medicines`, request);
++  }
++
++  updateMedicine(id: string, request: MedicineUpdateRequest) {
++    return this.http.put<MedicineDetails>(`${apiBaseUrl}/medicines/${id}`, request);
++  }
++
++  deleteMedicine(id: string) {
++    return this.http.delete<void>(`${apiBaseUrl}/medicines/${id}`);
+   }
+ 
+   getSales() {
+diff --git a/ABCPharmacy.Client/src/environments/environment.development.ts b/ABCPharmacy.Client/src/environments/environment.development.ts
+new file mode 100644
+index 0000000..fc4222f
+--- /dev/null
++++ b/ABCPharmacy.Client/src/environments/environment.development.ts
+@@ -0,0 +1,4 @@
++export const environment = {
++  production: false,
++  apiBaseUrl: 'http://localhost:5178/api'
++};
+diff --git a/ABCPharmacy.Client/src/environments/environment.ts b/ABCPharmacy.Client/src/environments/environment.ts
+new file mode 100644
+index 0000000..1fd36be
+--- /dev/null
++++ b/ABCPharmacy.Client/src/environments/environment.ts
+@@ -0,0 +1,4 @@
++export const environment = {
++  production: true,
++  apiBaseUrl: '/api'
++};
+diff --git a/README.md b/README.md
+index f479ded..11b573e 100644
+--- a/README.md
++++ b/README.md
+@@ -37,5 +37,12 @@ Angular 21 requires Node.js 20.19+, 22.12+, or 24+. If your global `node --versi
+ - `GET /api/medicines?search={name}` lists medicines without notes for the grid.
+ - `GET /api/medicines/{id}` returns one medicine with notes.
+ - `POST /api/medicines` adds medicine details.
++- `PUT /api/medicines/{id}` updates medicine details.
++- `DELETE /api/medicines/{id}` removes a medicine from inventory.
+ - `GET /api/sales` lists sales records.
+ - `POST /api/sales` records a sale and decrements stock.
++
++## Client configuration
++
++The Angular API base URL is configured in `ABCPharmacy.Client/src/environments`.
++Development builds call `http://localhost:5178/api`; production builds use `/api`.
+-- 
+2.52.0.windows.1
+
